@@ -28,6 +28,8 @@
  */
 package net.md_5.specialsource;
 
+import net.md_5.specialsource.dynamic.DynamicReflection;
+
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
@@ -48,6 +50,8 @@ import java.util.List;
  * - Applying access transformers
  * - Remapping reflected field string constants
  * - Remapping reflected class name string constants
+ * - Dynamically reflect field string
+ * - Dynamically reflect method string
  */
 public class RemapperPreprocessor {
 
@@ -57,6 +61,7 @@ public class RemapperPreprocessor {
     private AccessMap accessMap;
     private boolean remapReflectField;
     private boolean remapReflectClass;
+    private boolean dynamicReflect;
 
     /**
      *
@@ -73,6 +78,8 @@ public class RemapperPreprocessor {
         this.accessMap = accessMap;
         this.remapReflectField = true;
         this.remapReflectClass = false;
+        this.dynamicReflect = true;
+        DynamicReflection.setJarMapping(jarMapping); // TODO: Search a better place for it
     }
 
     public RemapperPreprocessor(InheritanceMap inheritanceMap, JarMapping jarMapping) {
@@ -103,6 +110,16 @@ public class RemapperPreprocessor {
         remapReflectClass = b;
     }
 
+    /**
+     * Enable or disable dynamic reflection.
+     * Requires a jarMapping and the jar must be shaded.
+     */
+    public void setDynamicReflect(boolean b)
+    {
+        // TODO: Check is shaded
+        dynamicReflect = b;
+    }
+    
     @SuppressWarnings("unchecked")
     public byte[] preprocess(ClassReader classReader) {
         byte[] bytecode = null;
@@ -162,7 +179,14 @@ public class RemapperPreprocessor {
                         switch (insn.getOpcode())
                         {
                             case Opcodes.INVOKEVIRTUAL:
-                                remapGetDeclaredField(insn);
+                                if(((MethodInsnNode) insn).name.equals("getDeclaredField"))
+                                {
+                                    remapGetDeclaredField(insn);
+                                }
+                                else
+                                {
+                                    remapGetDeclaredMethod(insn);
+                                }
                                 break;
 
                             case Opcodes.INVOKESTATIC:
@@ -206,22 +230,46 @@ public class RemapperPreprocessor {
         logR("ReflectionRemapper found getDeclaredField!");
 
         if (insn.getPrevious() == null || insn.getPrevious().getOpcode() != Opcodes.LDC) {
+            if(dynamicReflect)
+            {
+                dynamicReflectGetDeclaredField(mi);
+                return;
+            }
+            
             logR("- not constant field; skipping, prev=" + insn.getPrevious());
             return;
         }
         LdcInsnNode ldcField = (LdcInsnNode) insn.getPrevious();
         if (!(ldcField.cst instanceof String)) {
+            if(dynamicReflect)
+            {
+                dynamicReflectGetDeclaredField(mi);
+                return;
+            }
+            
             logR("- not field string; skipping: " + ldcField.cst);
             return;
         }
         String fieldName = (String) ldcField.cst;
 
         if (ldcField.getPrevious() == null || ldcField.getPrevious().getOpcode() != Opcodes.LDC) {
+            if(dynamicReflect)
+            {
+                dynamicReflectGetDeclaredField(mi);
+                return;
+            }
+            
             logR("- not constant class; skipping: field=" + ldcField.cst);
             return;
         }
         LdcInsnNode ldcClass = (LdcInsnNode) ldcField.getPrevious();
         if (!(ldcClass.cst instanceof Type)) {
+            if(dynamicReflect)
+            {
+                dynamicReflectGetDeclaredField(mi);
+                return;
+            }
+            
             logR("- not class type; skipping: field=" + ldcClass.cst + ", class=" + ldcClass.cst);
             return;
         }
@@ -277,6 +325,50 @@ public class RemapperPreprocessor {
          }
     }
 
+    private void remapGetDeclaredMethod(AbstractInsnNode insn) {
+        if (!this.dynamicReflect) {
+            return;
+        }
+    
+        MethodInsnNode mi = (MethodInsnNode) insn;
+    
+        if (!mi.owner.equals("java/lang/Class") || !mi.name.equals("getDeclaredMethod") || !mi.desc.equals("(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;")) {
+            return;
+        }
+    
+        logR("ReflectionRemapper found getDeclaredMethod!");
+    
+        dynamicReflectGetDeclaredMethod(mi);
+    }
+     
+    private void dynamicReflectGetDeclaredField(MethodInsnNode mi)
+    {
+        if(!dynamicReflect)
+        {
+            return;
+        }
+        
+        mi.setOpcode(Opcodes.INVOKESTATIC);
+        mi.owner = "net/md_5/specialsource/dynamic/DynamicReflection";
+        mi.desc = "(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/reflect/Field;";
+        
+        logR("- dynamic reflecting");
+    }
+
+    private void dynamicReflectGetDeclaredMethod(MethodInsnNode mi)
+    {
+        if(!dynamicReflect)
+        {
+            return;
+        }
+        
+        mi.setOpcode(Opcodes.INVOKESTATIC);
+        mi.owner = "net/md_5/specialsource/dynamic/DynamicReflection";
+        mi.desc = "(Ljava/lang/Class;Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;";
+        
+        logR("- dynamic reflecting");
+    }
+    
     private void logI(String message) {
         if (debug) {
             System.out.println("[Inheritance] " + message);
